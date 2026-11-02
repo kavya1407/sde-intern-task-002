@@ -155,3 +155,17 @@ You must understand every line you submit. We check this with your video and in 
 5. Paste the repository link and the video link in the application form.
 
 We will run `pnpm install && pnpm check && pnpm typecheck && pnpm test` on your repository.
+
+## Decisions
+
+1. **Deterministic Member Ordering via `seq AUTOINCREMENT`:**
+   - _Decision:_ Used an autoincrementing integer sequence (`seq INTEGER PRIMARY KEY AUTOINCREMENT`) alongside a UUID `id` (`uq_members_id`) for home members.
+   - _Why:_ Uneven bill splits require distributing remainder cents in the exact order members were added. Relying on timestamps can lead to race conditions or sub-millisecond collisions, while hidden `rowid`s are implementation-dependent. An explicit monotonic sequence guarantees strict, deterministic addition order.
+
+2. **Atomic Conditional Update for Concurrency & Idempotency:**
+   - _Decision:_ Implemented payments via an atomic conditional SQL statement: `UPDATE shares SET paid_at = ?, idempotency_key = ? WHERE id = ? AND bill_id = ? AND paid_at IS NULL`.
+   - _Why:_ Prevents race conditions when two users pay the same share concurrently. Only one request transitions the share state (`changes === 1`). A concurrent or repeated request updates 0 rows and safely inspects the recorded `idempotency_key`: matching keys return 200 with the original payment timestamp, while differing keys return 409 Conflict.
+
+3. **Transactional Bill & Share Creation via `DB.batch()`:**
+   - _Decision:_ Executed the bill insertion and all member share insertions within a single `c.env.DB.batch()` call.
+   - _Why:_ Guarantees multi-statement atomicity in Cloudflare D1. If any share insertion fails or errors midway, the entire operation rolls back, preventing orphaned bills, partial splits, or unbalanced totals from corrupting the database.
